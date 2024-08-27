@@ -1,8 +1,8 @@
 cabal-version:      3.0
-name:               highlightError
+name:               highlight
 version:            0.1.0.0
-synopsis:           A tool to highlight errors in code
-description:        highlightError is a Haskell library that provides functionality to highlight errors in code snippets. It aims to improve readability and debugging by visually emphasizing problematic areas in source code.
+synopsis:           A tool to highlight terminal strings
+description:        highlight is a Haskell library that provides functionality to highlight anything in code snippets. It aims to improve readability and debugging by visually emphasizing problematic areas in source code.
 license:            MIT
 license-file:       LICENSE
 author:             Lorenzobattistela
@@ -13,26 +13,27 @@ extra-doc-files:    CHANGELOG.md
 
 source-repository head
   type:     git
-  location: https://github.com/Lorenzobattistela/hs-highlight-error.git
+  location: https://github.com/Lorenzobattistela/hs-highlight.git
 
 common warnings
     ghc-options: -Wall
 
 library
     import:           warnings
-    exposed-modules:  HighlightError
-    build-depends:    base ^>=4.17.2.1
+    exposed-modules:  Highlight
+    build-depends:    base >= 4.17 && < 4.21, 
+                      bytestring==0.12.1.0
     hs-source-dirs:   src
     default-language: Haskell2010
 
-test-suite highlightError-test
+test-suite highlight-test
     import:           warnings
     default-language: Haskell2010
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          Main.hs
     build-depends:
-        base ^>=4.17.2.1,
-        highlightError,
+        base >= 4.17 && < 4.21,
+        highlight,
         hspec >= 2.7.1,
-        HUnit==1.6.2.0
+        HUnit==1.6.2.0,
