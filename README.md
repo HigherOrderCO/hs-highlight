@@ -32,6 +32,9 @@ main = do
 ```
 
 This will highlight the specified portion of the code in red and underline it.
+Note that the in the structure `(startLine, startCol), (endLine, endCol)` endCol is exclusive, which means in the line:
+`abcde`
+`(1, 1) , (1, 3)` will underline `ab`
 
 ## API
 
