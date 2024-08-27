@@ -63,6 +63,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+Developed with [@NaoEhSavio](https://github.com/NaoEhSavio)
+
 ## Contact
 
 For any queries, please contact the maintainer at lorenzobattistela@gmail.com.
