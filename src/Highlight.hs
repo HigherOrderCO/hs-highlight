@@ -21,70 +21,74 @@ module Highlight
     , getColor
     ) where
 
--- | Highlights an error in the given content between the specified start and end positions.
+-- | Highlight errors with red color and underline.
+-- 
+-- This function highlights text in the specified range with red color and underline.
+-- 
+-- * `sLine`, `sCol`: Starting line and column position.
+-- * `eLine`, `eCol`: Ending line and column position.
+-- * `file`: The text content to process.
+-- 
+-- Returns the highlighted text.
 highlightError :: (Int, Int) -> (Int, Int) -> String -> String
-highlightError (sLine, sCol) (eLine, eCol) content =
-  highlight (sLine, sCol) (eLine, eCol) "red" underline content
+highlightError (sLine, sCol) (eLine, eCol) file =
+    let color = getColor "red"
+    in highlight (sLine, sCol) (eLine, eCol) color underline file
 
--- | Highlights a portion of the given content between the specified start and end positions with a specified color and effect.
+-- | Highlight text in the given range.
+-- 
+-- This function highlights text within the specified range with the provided color and formatting function.
+-- 
+-- * `sPos`: Starting position as a tuple (line, column).
+-- * `ePos`: Ending position as a tuple (line, column).
+-- * `color`: The color code to apply for highlighting.
+-- * `format`: A function to format the highlighted text.
+-- * `file`: The text content to process.
+-- 
+-- Returns the highlighted text.
 highlight :: (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String -> String
-highlight sPos@(sLine, sCol) ePos@(eLine, eCol) color effect content =
-    assert (isInBounds sPos ePos) "Start position must be before or equal to end position" $
-
-    let (lineIndices, lineNumbers) = targetLines content sLine eLine
-        displayText = buildDisplayText lineIndices lineNumbers sPos ePos color effect
-    in displayText
-
--- | Extracts the target lines and their indices from the content based on the start and end line numbers.
-targetLines :: String -> Int -> Int -> ([(Int, String)], [Int])
-targetLines content sLine eLine =
-    let
-        -- Pair each line with its line number, starting from 1
-        numberedLines = zip [1..] $ lines content
+highlight sPos@(sLine, sCol) ePos@(eLine, eCol) color format file =
+    -- Assert that the range is valid
+    assert (isInBounds sPos ePos)
+           "Start position must be before or equal to end position" $
+    
+    let -- Split file into lines
+        linesList = lines file
         
-        -- Extract only the lines between startLine and endLine
-        intervalLines = takeWhile (\(lineNum, _) -> lineNum <= eLine) $ 
-                        dropWhile (\(lineNum, _) -> lineNum < sLine) numberedLines
-        
-        -- Calculate cumulative character indices for each target line
-        -- Example: "Hello\nWorld" will return [0, 6] because 0 has 5 characters + 1 for newline
-        indices = scanl (\accIndex (_, line) -> accIndex + length line + 1) 0 intervalLines
-        -- Extract line numbers from target lines to a list
-        numbers = map fst intervalLines
-        -- Extract line contents from target lines to a list
-        contents = map snd intervalLines
-        -- Pair each line index with its corresponding line content
-        -- Example: "Hello\nWorld" would return: [(0, "Hello"), (6, "World")]
-        indexedLines = zip indices contents
-      -- Returns (a list of)  a tuple containing the indexed lines above along with their respective line numbers
-     in (indexedLines, numbers)
+        -- Length of the number of lines for padding
+        numLen = length (show eLine)  
 
--- | Builds the display text with highlighting applied to the specified portion of the content.
-buildDisplayText :: [(Int, String)] -> [Int] -> (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String
-buildDisplayText indices numbers (sLine, sCol) (eLine, eCol) colorStr effect =
-    -- Calculate the maximum line number to pad the pipe
-    let maxNumLineWidth = length $ show $ maximum numbers
-        -- add padding to the number + pipe line
-        formatLineNum n = pad maxNumLineWidth (show n) ++ " | "
-        color = getColor colorStr
-        reset = "\x1b[0m"
+        -- Recursive function to process each line
+        highlightLines :: [String] -> Int -> String
+        highlightLines [] _ = ""  -- Base case: no more lines to process
+        highlightLines (line : rest) num
+            | num < sLine = highlightLines rest (num + 1)  -- Skip lines before the start line
+            | num > eLine = ""  -- Stop processing if past the end line
+            | otherwise =
+                let -- Determine the start and end columns for highlighting
+                    targetStartCol = if num == sLine then sCol - 1 else 0
+                    adjustedCol = if num == eLine then eCol - 1 else length line
+                    targetEndCol = min adjustedCol (length line)
 
-        -- helper to determine start/end column index of highlighting
-        col num line col fallback = if num == line then col - 1 else fallback 
+                    reset = getColor "reset"
+                    
+                    -- Split the line into before, highlight, and after parts
+                    (before, restLine) = splitAt targetStartCol line
+                    (target, after) = splitAt (targetEndCol - targetStartCol) restLine
 
-        highlightLine (start, line) num =
-              -- Split the line at the starting column for highlighting (0-based index).
-          let (before, rest)  = splitAt (col num sLine sCol 0) line
-              -- Split the remaining part of the line at the ending column for highlighting (0-based index), 
-              -- adjusted by subtracting the length of the `before` segment to correctly identify the `target` segment.
-              (target, after) = splitAt (col num eLine eCol (length line) - length before) rest
-              -- apply color and effects to target text
-              highlighted = color ++ effect target ++ reset
-          in formatLineNum num ++ before ++ highlighted ++ after
+                    -- Apply formatting function to the highlighted part
+                    formattedTarget = format target
 
-    -- zipWith calls highlightLine for every element of zipped indices and numbers, resulting in a list of strings with the highlighted ones
-    -- unlines concate them with newlines, returning a highlighted string
-    in unlines $ zipWith highlightLine indices numbers
+                    -- Format the line with number, highlighted part, and color codes
+                    numStr = pad numLen (show num)
+                    highlightedLine =
+                      if null target
+                      then numStr ++ " | " ++ before ++ after ++ "\n"                     
+                      else numStr ++ " | " ++ before ++ color ++ formattedTarget ++ reset ++ after ++ "\n"
+                in highlightedLine ++ highlightLines rest (num + 1)  -- Recursively process the remaining lines
+
+    -- Start highlighting from line number 1
+    in highlightLines linesList 1
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
@@ -116,6 +120,7 @@ getColor color = case color of
     "magenta" -> "\x1b[35m"
     "cyan"    -> "\x1b[36m"
     "white"   -> "\x1b[37m"
+    "reset"   -> "\x1b[0m"
     _         -> "\x1b[0m"  -- defaults to reset
 
 -- | Applies underline formatting to text using ANSI escape codes.
