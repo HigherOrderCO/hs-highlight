@@ -21,58 +21,81 @@ module Highlight
     , getColor
     ) where
 
--- | Highlights an error in the given text using red underline.
-highlightError :: (Int, Int) -- ^ Start position (line, column)
-               -> (Int, Int) -- ^ End position (line, column)
-               -> String     -- ^ The text content
-               -> String     -- ^ The highlighted text
-highlightError (startLine, startCol) (endLine, endCol) content =
-  highlight (startLine, startCol) (endLine, endCol) "red" content underline
+-- | Highlights an error in the given content between the specified start and end positions.
+highlightError :: (Int, Int) -> (Int, Int) -> String -> String
+highlightError (sLine, sCol) (eLine, eCol) content =
+  highlight (sLine, sCol) (eLine, eCol) "red" underline content
 
--- | Highlights a portion of text with a specified color and effect.
-highlight :: (Int, Int)            -- ^ Start position (line, column)
-          -> (Int, Int)            -- ^ End position (line, column)
-          -> String                -- ^ Color name
-          -> String                -- ^ The text content
-          -> (String -> String)    -- ^ Effect function
-          -> String                -- ^ The highlighted text
-highlight (startLine, startCol) (endLine, endCol) color content effect =
-    assert (startLine <= endLine && (startLine /= endLine || startCol <= endCol)) "Start position must be before or equal to end position" $
-    let (lineIndices, lineNumbers) = calculateIndicesAndLineNumbers content (startLine, startCol) (endLine, endCol)
-        displayText = buildDisplayText lineIndices lineNumbers (startLine, startCol) (endLine, endCol) color effect
+-- | Highlights a portion of the given content between the specified start and end positions with a specified color and effect.
+highlight :: (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String -> String
+highlight sPos@(sLine, sCol) ePos@(eLine, eCol) color effect content =
+    assert (isInBounds sPos ePos) "Start position must be before or equal to end position" $
+
+    let (lineIndices, lineNumbers) = targetLines content sLine eLine
+        displayText = buildDisplayText lineIndices lineNumbers sPos ePos color effect
     in displayText
 
--- | Calculates indices and line numbers for the relevant portion of text.
-calculateIndicesAndLineNumbers :: String -> (Int, Int) -> (Int, Int) -> ([(Int, String)], [Int])
-calculateIndicesAndLineNumbers content (startLine, startCol) (endLine, endCol) =
-    let linesWithNumbers = zip [1..] $ lines content
-        relevantLines = takeWhile (\(n, _) -> n <= endLine) $ dropWhile (\(n, _) -> n < startLine) linesWithNumbers
-        lineIndices = scanl (\acc (_, l) -> acc + length l + 1) 0 relevantLines
-        lineNumbers = map fst relevantLines
-    in (zip lineIndices (map snd relevantLines), lineNumbers)
-
--- | Builds the display text with line numbers and highlighting.
-buildDisplayText :: [(Int, String)] -> [Int] -> (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String
-buildDisplayText lineIndices lineNumbers (startLine, startCol) (endLine, endCol) colorStr effect =
-    let maxLineNumWidth = length $ show $ maximum lineNumbers
-        formatLineNum n = pad maxLineNumWidth (show n)
+-- | Extracts the target lines and their indices from the content based on the start and end line numbers.
+targetLines :: String -> Int -> Int -> ([(Int, String)], [Int])
+targetLines content sLine eLine =
+    let
+        -- Pair each line with its line number, starting from 1
+        numberedLines = zip [1..] $ lines content
         
-        highlightLine :: Int -> Int -> String -> String
-        highlightLine lineNum lineStart line =
-            let lineEnd = if lineNum == endLine then endCol - 1 else length line
-                startCol' = if lineNum == startLine then startCol - 1 else 0
-                (before, highlight) = splitAt startCol' line
-                (toHighlight, after) = splitAt (lineEnd - startCol') highlight
-            in formatLineNum lineNum ++ " | " ++ before ++ color ++ (effect toHighlight) ++ reset ++ after
+        -- Extract only the lines between startLine and endLine
+        intervalLines = takeWhile (\(lineNum, _) -> lineNum <= eLine) $ 
+                        dropWhile (\(lineNum, _) -> lineNum < sLine) numberedLines
+        
+        -- Calculate cumulative character indices for each target line
+        -- Example: "Hello\nWorld" will return [0, 6] because 0 has 5 characters + 1 for newline
+        indices = scanl (\accIndex (_, line) -> accIndex + length line + 1) 0 intervalLines
+        -- Extract line numbers from target lines to a list
+        numbers = map fst intervalLines
+        -- Extract line contents from target lines to a list
+        contents = map snd intervalLines
+        -- Pair each line index with its corresponding line content
+        -- Example: "Hello\nWorld" would return: [(0, "Hello"), (6, "World")]
+        indexedLines = zip indices contents
+      -- Returns (a list of)  a tuple containing the indexed lines above along with their respective line numbers
+     in (indexedLines, numbers)
+
+-- | Builds the display text with highlighting applied to the specified portion of the content.
+buildDisplayText :: [(Int, String)] -> [Int] -> (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String
+buildDisplayText indices numbers (sLine, sCol) (eLine, eCol) colorStr effect =
+    -- Calculate the maximum line number to pad the pipe
+    let maxNumLineWidth = length $ show $ maximum numbers
+        -- add padding to the number + pipe line
+        formatLineNum n = pad maxNumLineWidth (show n) ++ " | "
         color = getColor colorStr
         reset = "\x1b[0m"
-    in unlines $ zipWith3 highlightLine lineNumbers (map fst lineIndices) (map snd lineIndices)
+
+        -- helper to determine start/end column index of highlighting
+        col num line col fallback = if num == line then col - 1 else fallback 
+
+        highlightLine (start, line) num =
+              -- Split the line at the starting column for highlighting (0-based index).
+          let (before, rest)  = splitAt (col num sLine sCol 0) line
+              -- Split the remaining part of the line at the ending column for highlighting (0-based index), 
+              -- adjusted by subtracting the length of the `before` segment to correctly identify the `target` segment.
+              (target, after) = splitAt (col num eLine eCol (length line) - length before) rest
+              -- apply color and effects to target text
+              highlighted = color ++ effect target ++ reset
+          in formatLineNum num ++ before ++ highlighted ++ after
+
+    -- zipWith calls highlightLine for every element of zipped indices and numbers, resulting in a list of strings with the highlighted ones
+    -- unlines concate them with newlines, returning a highlighted string
+    in unlines $ zipWith highlightLine indices numbers
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
     -> String -- ^ String to pad
     -> String -- ^ Padded string
 pad len txt = replicate (max (len - length txt) 0) ' ' ++ txt
+
+-- | Checks if the start position is before or equal to the end position.
+isInBounds :: (Int, Int) -> (Int, Int) -> Bool
+isInBounds (sLine, sCol) (eLine, eCol) =
+    sLine < eLine || (sLine == eLine && sCol <= eCol)
 
 -- | Simple assertion function.
 assert :: Bool   -- ^ Condition to assert

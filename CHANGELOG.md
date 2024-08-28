@@ -10,3 +10,7 @@
 ## 1.0.1 -- 2024-08-27
 
 * Fix test dependencies
+
+## 1.0.2 -- 2024-08-28
+
+* Refactoring functions for better readability and clarity.

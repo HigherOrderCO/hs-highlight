@@ -20,12 +20,12 @@ main = hspec $ do
     describe "highlight" $ do
       it "highlights a single line correctly" $ do
         let text = "This is a test"
-            result = highlight (1, 1) (1, 4) "red" text id
+            result = highlight (1, 1) (1, 4) "red" id text
         result `shouldContain` "\ESC[31mThi\ESC[0ms"
 
       it "highlights multiple lines correctly" $ do
         let text = "First line\nSecond line\nThird line"
-            result = highlight (1, 1) (2, 3) "blue" text id
+            result = highlight (1, 1) (2, 3) "blue" id text
         result `shouldContain` "\ESC[34mFirst line\ESC[0m\n2 | \ESC[34mSe\ESC[0mcond line\n"
 
     describe "highlightError" $ do
