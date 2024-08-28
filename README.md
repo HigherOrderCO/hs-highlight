@@ -32,7 +32,7 @@ main = do
 ```
 
 This will highlight the specified portion of the code in red and underline it.
-Note that the in the structure `(startLine, startCol), (endLine, endCol)` endCol is exclusive, which means in the line:
+Note that in the structure `(startLine, startCol), (endLine, endCol)` endCol is exclusive, which means in the line:
 `abcde`
 `(1, 1) , (1, 3)` will underline `ab`
 
@@ -41,12 +41,33 @@ Note that the in the structure `(startLine, startCol), (endLine, endCol)` endCol
 The main functions provided by this library are:
 
 - `highlightError :: (Int, Int) -> (Int, Int) -> String -> String`
-- `highlight :: (Int, Int) -> (Int, Int) -> String -> String -> (String -> String) -> String`
+- `highlight :: (Int, Int) -> (Int, Int) -> String -> (String -> String) -> String -> String`
 
 Additional utility functions:
 
 - `underline`, `bold`, `italic`, `parenthesize`, `strikethrough`, `inverse`
 - `getColor :: String -> String`
+
+## Examples
+
+Here are some more examples of how to use the library:
+
+```haskell
+import Highlight
+
+main :: IO ()
+main = do
+    let code = "def factorial(n):\n    if n == 0:\n        return 1\n    else:\n        return n * factorial(n - 1)"
+    
+    -- Highlight a specific range with a custom color and formatting
+    putStrLn $ highlight (2, 5) (2, 11) (getColor "blue") bold code
+    
+    -- Use predefined error highlighting
+    putStrLn $ highlightError (4, 9) (4, 14) code
+    
+    -- Combine multiple effects
+    putStrLn $ highlight (1, 1) (1, 3) (getColor "green") (underline . italic) code
+```
 
 ## Testing
 

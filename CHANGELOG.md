@@ -14,3 +14,9 @@
 ## 1.0.2 -- 2024-08-28
 
 * Refactoring functions for better readability and clarity.
+
+## 1.0.3 -- 2024-08-28
+
+* Refactored highlight and highlightError
+* Fix highlight for indices after end of file
+* Added test cases
