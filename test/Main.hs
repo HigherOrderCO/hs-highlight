@@ -1,3 +1,4 @@
+
 module Main where
 
 import Test.Hspec
@@ -20,13 +21,36 @@ main = hspec $ do
     describe "highlight" $ do
       it "highlights a single line correctly" $ do
         let text = "This is a test"
-            result = highlight (1, 1) (1, 4) "red" id text
+            result = highlight (1, 1) (1, 4) (getColor "red") id text
         result `shouldContain` "\ESC[31mThi\ESC[0ms"
 
       it "highlights multiple lines correctly" $ do
         let text = "First line\nSecond line\nThird line"
-            result = highlight (1, 1) (2, 3) "blue" id text
+            result = highlight (1, 1) (2, 3) (getColor "blue") id text
         result `shouldContain` "\ESC[34mFirst line\ESC[0m\n2 | \ESC[34mSe\ESC[0mcond line\n"
+
+    describe "file bound check" $ do
+      it "does not highlight if line does not exist" $ do
+        let text = "hello"
+            result = highlight (2, 1) (2, 10) (getColor "red") id text
+        result `shouldBe` ""
+
+      it "does not highlight a line past end of the file" $ do
+        let text = "hello"
+            result = highlight (1, 1) (2, 10) (getColor "red") id text
+        result `shouldBe` "1 | \ESC[31mhello\ESC[0m\n"
+
+      it "does not highlight a column that does not exist" $ do
+        let text = "hello"
+            result = highlight (1, 30) (1, 50) (getColor "red") id text
+        result `shouldBe` "1 | hello\n"
+
+      it "does not highlight a column past end of the file" $ do
+        let text = "hello"
+            result = highlight (1, 1) (1, 50) (getColor "red") id text
+        result `shouldBe` "1 | \ESC[31mhello\ESC[0m\n"
+
+
 
     describe "highlightError" $ do
       it "highlights an error in a single line" $ do
@@ -46,4 +70,5 @@ main = hspec $ do
         result `shouldContain` "2 |   console.log(\ESC[31m\ESC[4m\"Hello, \" + name \ESC[24m\ESC[0m+ \"!\");\n"
         result `shouldNotContain` "\x1b[31m\ESC[4mfunction\x1b[0m"
         result `shouldNotContain` "\x1b[31m\ESC[4m世界\x1b[0m"
+
 
