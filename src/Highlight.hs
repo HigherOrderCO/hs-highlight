@@ -11,7 +11,6 @@ module Highlight
     ) where
 
 import Data.Char (isSpace)
-import Debug.Trace
 
 -- | Highlight errors with red colour and underline.
 --   Leading and trailing whitespace in the supplied range is automatically
