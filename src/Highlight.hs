@@ -23,7 +23,18 @@ highlightError sPos ePos file =
     let (trimSPos, trimEPos) = trimRegion sPos ePos file
         colour               = getColor "red"
     in  if trimSPos == trimEPos
-          then file  -- nothing but whitespace was selected → keep original text
+          then
+            let startIdx = posToIndex file sPos
+                findPrevNonWhitespace i
+                  | i < 0                     = -1 -- Not found
+                  | not (isSpace (file !! i)) = i
+                  | otherwise                 = findPrevNonWhitespace (i - 1)
+                prevCharIdx = findPrevNonWhitespace (startIdx - 1)
+            in if prevCharIdx /= -1
+                then let prevCharSPos = indexToPos file prevCharIdx
+                         prevCharEPos = indexToPos file (prevCharIdx + 1)
+                     in highlight prevCharSPos prevCharEPos colour underline file
+                else file -- Nothing to highlight, return original text.
           else highlight trimSPos trimEPos colour underline file
 
 -- | Trim leading and trailing whitespace (spaces, tabs, new-lines, etc.) from
@@ -64,10 +75,11 @@ posToIndex src (tLine, tCol) = go 0 1 1 src
   where
     go idx line col [] = idx
     go idx line col (c:cs)
+        | line > tLine                 = idx - 1
         | line == tLine && col == tCol = idx
         | otherwise =
             let (line', col') =
-                  if c == '\n' then (line + 1, 1) else (line, col + 1)
+                    if c == '\n' then (line + 1, 1) else (line, col + 1)
             in go (idx + 1) line' col' cs
 
 -- | Convert a 0-based character index back to a (line, column) pair (1-based).
