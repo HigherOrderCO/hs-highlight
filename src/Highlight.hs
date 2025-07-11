@@ -11,6 +11,7 @@ module Highlight
     ) where
 
 import Data.Char (isSpace)
+import Data.List (foldl')
 
 -- | Highlight errors with red colour and underline.
 --   Leading and trailing whitespace in the supplied range is automatically
@@ -25,17 +26,16 @@ highlightError sPos ePos file =
     in  if trimSPos == trimEPos
           then
             let startIdx = posToIndex file sPos
-                findPrevNonWhitespace i
-                  | i < 0                     = -1 -- Not found
-                  | not (isSpace (file !! i)) = i
-                  | otherwise                 = findPrevNonWhitespace (i - 1)
-                prevCharIdx = findPrevNonWhitespace (startIdx - 1)
+                prevCharIdx = findLastNonSpace (take startIdx file)
             in if prevCharIdx /= -1
                 then let prevCharSPos = indexToPos file prevCharIdx
                          prevCharEPos = indexToPos file (prevCharIdx + 1)
                      in highlight prevCharSPos prevCharEPos colour underline file
                 else file -- Nothing to highlight, return original text.
           else highlight trimSPos trimEPos colour underline file
+  where
+    findLastNonSpace str = snd $ foldl' go (0, -1) str
+      where go (idx, maxidx) c = (idx + 1, if not (isSpace c) then idx else maxidx)
 
 -- | Trim leading and trailing whitespace (spaces, tabs, new-lines, etc.) from
 --   the given range.  The returned end position is again /exclusive/.
@@ -46,23 +46,13 @@ trimRegion
     -> ((Int, Int), (Int, Int))
 trimRegion sPos ePos src =
     let startIdx = posToIndex src sPos
-        endIdx0  = posToIndex src ePos
-        endIdx   = min endIdx0 (length src)
-
-        -- move start forwards past whitespace
-        forward i
-          | i >= endIdx              = endIdx
-          | not (isSpace (src !! i)) = i
-          | otherwise                = forward (i + 1)
-
-        -- move end backwards past whitespace
-        backward i
-          | i < startIdx             = startIdx - 1
-          | not (isSpace (src !! i)) = i
-          | otherwise                = backward (i - 1)
-
-        newStartIdx = forward startIdx
-        newEndIdx   = backward (endIdx - 1) + 1   -- keep end exclusive
+        endIdx   = posToIndex src ePos
+        sub      = drop startIdx (take endIdx src)
+        leading  = length (takeWhile isSpace sub)
+        newStartIdx = startIdx + leading
+        remaining = drop leading sub
+        trailing = length (takeWhile isSpace (reverse remaining))
+        newEndIdx = newStartIdx + (length remaining - trailing)
     in if newStartIdx >= newEndIdx
           then (sPos, sPos)  -- selection contained only whitespace
           else ( indexToPos src newStartIdx
@@ -111,6 +101,7 @@ highlight sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
 
     let -- Split file into lines
         linesList = lines file
+        relevantLines = drop (sLine - 1) linesList
 
         -- Length of the number of lines for padding
         numLen = length (show eLine)
@@ -119,7 +110,6 @@ highlight sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
         highlightLines :: [String] -> Int -> String
         highlightLines [] _ = ""  -- Base case: no more lines to process
         highlightLines (line : rest) num
-            | num < sLine = highlightLines rest (num + 1)  -- Skip lines before the start line
             | num > eLine = ""  -- Stop processing if past the end line
             | otherwise  =
                 let -- Determine the start and end columns for highlighting
@@ -145,8 +135,8 @@ highlight sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
                                      ++ reset  ++ after ++ "\n"
                 in highlightedLine ++ highlightLines rest (num + 1)  -- Recursively process remaining lines
 
-    -- Start highlighting from line number 1
-    in highlightLines linesList 1
+    -- Start highlighting from sLine
+    in highlightLines relevantLines sLine
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
@@ -210,4 +200,3 @@ strikethrough text = "\x1b[9m" ++ text ++ "\x1b[29m"
 inverse :: String -- ^ Text to inverse
         -> String
 inverse text = "\x1b[7m" ++ text ++ "\x1b[27m"
-
