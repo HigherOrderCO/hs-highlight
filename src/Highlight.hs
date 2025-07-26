@@ -99,9 +99,14 @@ highlight sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
     assert (isInBounds sPos ePos)
            "Start position must be before or equal to end position" $
 
-    let -- Split file into lines
-        linesList = lines file
-        relevantLines = drop (sLine - 1) linesList
+    let -- Extract only the relevant substring for the lines sLine to eLine
+        startIdx = posToIndex file (sLine, 1)
+        nextLine = eLine + 1
+        endIdx   = posToIndex file (nextLine, 1)
+        -- Safety: ensure indices are sane
+        subLen   = max 0 (endIdx - startIdx)
+        sub      = take subLen (drop startIdx file)
+        relevantLines = lines sub
 
         -- Length of the number of lines for padding
         numLen = length (show eLine)
