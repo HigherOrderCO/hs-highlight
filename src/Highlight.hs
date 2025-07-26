@@ -10,11 +10,57 @@ module Highlight
     , strikethrough
     , inverse
     , getColor
+    , posToIndex
+    , indexToPos
     ) where
 
 import Data.Char (isSpace)
 import Data.List (foldl')
 import qualified Data.Text as T
+import qualified Data.Vector.Unboxed as VU
+
+-- Cache for line start positions
+data LineCache = LineCache
+    { lineStarts :: !(VU.Vector Int)
+    , textLength :: !Int
+    }
+
+-- Build line cache by scanning text once (CORRECT AND EFFICIENT VERSION)
+buildLineCache :: T.Text -> LineCache
+buildLineCache txt = LineCache (VU.fromList . reverse $ starts) (T.length txt)
+  where
+    -- Use a strict fold to find all newline indices in a single pass.
+    -- We accumulate the indices and the current position.
+    (_, starts) = T.foldl'
+                    (\(!idx, acc) char ->
+                       let !nextIdx = idx + 1
+                       in if char == '\n'
+                          then (nextIdx, nextIdx : acc) -- If newline, record the start of the next line
+                          else (nextIdx, acc))
+                    (0, [0]) -- Start at index 0, with the first line starting at 0.
+                    txt
+
+-- Convert position to index using line cache
+posToIndexWithCache :: LineCache -> (Int, Int) -> Int
+posToIndexWithCache (LineCache starts len) (line, col)
+  | line <= 0 = 0
+  | line > VU.length starts = len
+  | otherwise = (starts VU.! (line - 1)) + (col - 1)
+
+-- Convert index to position using line cache
+indexToPosWithCache :: LineCache -> Int -> (Int, Int)
+indexToPosWithCache (LineCache starts _) idx =
+    let line = binarySearch 0 (VU.length starts - 1)
+    in (line + 1, idx - (starts VU.! line) + 1)
+  where
+    binarySearch !low !high
+      | low >= high = low
+      | otherwise =
+          let !mid = (low + high + 1) `div` 2
+              !midVal = starts VU.! mid
+          in if idx < midVal
+             then binarySearch low (mid - 1)
+             else binarySearch mid high
 
 -- | Highlight errors with red colour and underline.
 highlightError :: (Int, Int) -- ^ Start position (line, column)
@@ -23,70 +69,100 @@ highlightError :: (Int, Int) -- ^ Start position (line, column)
                -> String
 highlightError sPos ePos fileStr =
     let !file = T.pack fileStr
-        (trimSPos, trimEPos) = trimRegion sPos ePos file
-        colour               = getColor "red"
+        !cache = buildLineCache file
+        (trimSPos, trimEPos) = trimRegionFast cache sPos ePos file
+        colour = getColor "red"
     in  if trimSPos == trimEPos
           then
-            let !startIdx = posToIndex file sPos
+            let !startIdx = posToIndexWithCache cache sPos
                 prevCharIdx = findLastNonSpace (T.take startIdx file)
             in if prevCharIdx /= -1
-                then let prevCharSPos = indexToPos file prevCharIdx
-                         prevCharEPos = indexToPos file (prevCharIdx + 1)
-                     in highlight' prevCharSPos prevCharEPos colour underline file
+                then let prevCharSPos = indexToPosWithCache cache prevCharIdx
+                         prevCharEPos = indexToPosWithCache cache (prevCharIdx + 1)
+                     in highlightFast cache prevCharSPos prevCharEPos colour underline file
                 else fileStr -- Nothing to highlight, return original text.
-          else highlight' trimSPos trimEPos colour underline file
+          else highlightFast cache trimSPos trimEPos colour underline file
   where
     findLastNonSpace txt = snd $ T.foldl' go (0, -1) txt
       where go (!idx, !maxidx) c = (idx + 1, if not (isSpace c) then idx else maxidx)
 
--- | Trim leading and trailing whitespace (spaces, tabs, new-lines, etc.) from
---   the given range.  The returned end position is again /exclusive/.
-trimRegion
-    :: (Int, Int)             -- ^ Start position (line, column)
-    -> (Int, Int)             -- ^ End   position (line, column) – exclusive
-    -> T.Text                 -- ^ Whole source text
-    -> ((Int, Int), (Int, Int))
-trimRegion sPos ePos src =
-    let !startIdx = posToIndex src sPos
-        !endIdx   = posToIndex src ePos
-        !sub      = T.drop startIdx (T.take endIdx src)
-        !leading  = T.length (T.takeWhile isSpace sub)
+-- Fast trimRegion using cache
+trimRegionFast :: LineCache -> (Int, Int) -> (Int, Int) -> T.Text -> ((Int, Int), (Int, Int))
+trimRegionFast cache sPos ePos src =
+    let !startIdx = posToIndexWithCache cache sPos
+        !endIdx = posToIndexWithCache cache ePos
+        !sub = T.drop startIdx (T.take endIdx src)
+        !leading = T.length (T.takeWhile isSpace sub)
         !newStartIdx = startIdx + leading
         !remaining = T.drop leading sub
         !trailing = T.length (T.takeWhile isSpace (T.reverse remaining))
         !newEndIdx = newStartIdx + (T.length remaining - trailing)
     in if newStartIdx >= newEndIdx
-          then (sPos, sPos)  -- selection contained only whitespace
-          else ( indexToPos src newStartIdx
-               , indexToPos src newEndIdx
-               )
+          then (sPos, sPos)
+          else (indexToPosWithCache cache newStartIdx,
+                indexToPosWithCache cache newEndIdx)
 
--- | Convert a (line, column) pair (both 1-based) to a 0-based character index.
--- OPTIMIZED: Stop at target line instead of scanning entire file
+-- Fast highlight using cache (OPTIMIZED VERSION)
+highlightFast :: LineCache -> (Int, Int) -> (Int, Int) -> String -> (String -> String) -> T.Text -> String
+highlightFast cache sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
+    assert (isInBounds sPos ePos)
+           "Start position must be before or equal to end position" $
+
+    let !numLen = length (show eLine)
+        !lineStartsVec = lineStarts cache
+        !totalLen = textLength cache
+        reset = getColor "reset"
+
+        -- Efficiently process a single line using indices from the cache
+        processLine :: Int -> String
+        processLine num =
+            let -- Get line start and end indices from the cache
+                !lineStartIdx = lineStartsVec VU.! (num - 1)
+                !lineEndIdx = if num < VU.length lineStartsVec
+                                 then lineStartsVec VU.! num
+                                 else totalLen
+
+                -- Extract the line text, stripping the trailing newline.
+                !line = T.stripEnd $ T.take (lineEndIdx - lineStartIdx) (T.drop lineStartIdx file)
+
+                -- Determine the highlighting columns for this specific line
+                !targetStartCol = if num == sLine then sCol - 1 else 0
+                !targetEndCol   = if num == eLine then eCol - 1 else T.length line
+
+                -- Split the line into three parts: before, target, and after
+                (!before, !rest)  = T.splitAt targetStartCol line
+                (!target, !after) = T.splitAt (targetEndCol - targetStartCol) rest
+
+                !beforeStr = T.unpack before
+                !targetStr = T.unpack target
+                !afterStr  = T.unpack after
+
+                !formattedTarget = format targetStr
+                !numStr = pad numLen (show num)
+
+            in if null targetStr
+               then numStr ++ " | " ++ beforeStr ++ afterStr
+               else numStr ++ " | " ++ beforeStr ++ colour ++ formattedTarget ++ reset ++ afterStr
+
+    in unlines $ map processLine [sLine..eLine]
+
+-- | Trim region - public API maintained for compatibility
+trimRegion :: (Int, Int) -> (Int, Int) -> T.Text -> ((Int, Int), (Int, Int))
+trimRegion sPos ePos src =
+    let !cache = buildLineCache src
+    in trimRegionFast cache sPos ePos src
+
+-- | Convert position to index - public API maintained for compatibility
 posToIndex :: T.Text -> (Int, Int) -> Int
-posToIndex src (tLine, tCol) = go 0 1 1
-  where
-    !len = T.length src
-    go !idx !line !col
-      | line > tLine = idx - 1
-      | line == tLine && col == tCol = idx
-      | idx >= len = idx
-      | otherwise =
-          let !c = T.index src idx
-              (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-          in go (idx + 1) line' col'
+posToIndex src pos =
+    let !cache = buildLineCache src
+    in posToIndexWithCache cache pos
 
--- | Convert a 0-based character index back to a (line, column) pair (1-based).
+-- | Convert index to position - public API maintained for compatibility
 indexToPos :: T.Text -> Int -> (Int, Int)
-indexToPos src targetIdx = go 0 1 1
-  where
-    !len = T.length src
-    go !idx !line !col
-      | idx == targetIdx || idx >= len = (line, col)
-      | otherwise =
-          let !c = T.index src idx
-              (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-          in go (idx + 1) line' col'
+indexToPos src idx =
+    let !cache = buildLineCache src
+    in indexToPosWithCache cache idx
 
 -- | Highlight text in the given range.
 highlight :: (Int, Int)        -- ^ Start position (line, column)
@@ -98,53 +174,11 @@ highlight :: (Int, Int)        -- ^ Start position (line, column)
 highlight sPos ePos colour format fileStr =
   highlight' sPos ePos colour format (T.pack fileStr)
 
--- | OPTIMIZED: Extract lines directly without converting positions
-highlight' :: (Int, Int)        -- ^ Start position (line, column)
-           -> (Int, Int)        -- ^ End   position (line, column) – exclusive
-           -> String            -- ^ ANSI colour code
-           -> (String -> String)
-           -> T.Text            -- ^ File contents as Text
-           -> String
-highlight' sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
-    assert (isInBounds sPos ePos)
-           "Start position must be before or equal to end position" $
-    
-    let -- Split into lines but keep track of where we are
-        allLines = T.lines file
-        -- Drop lines before start line, take only what we need
-        relevantLines = take (eLine - sLine + 1) $ drop (sLine - 1) allLines
-        
-        -- Length of the number of lines for padding
-        !numLen = length (show eLine)
-        
-        -- Process lines more efficiently
-        processLine :: T.Text -> Int -> String
-        processLine line num =
-            let !targetStartCol = if num == sLine then sCol - 1 else 0
-                !adjustedCol    = if num == eLine then eCol - 1 else T.length line
-                !targetEndCol   = min adjustedCol (T.length line)
-                
-                reset = getColor "reset"
-                
-                -- Only unpack what we need
-                (!before, !rest) = T.splitAt targetStartCol line
-                (!target, !after) = T.splitAt (targetEndCol - targetStartCol) rest
-                
-                !beforeStr = T.unpack before
-                !targetStr = T.unpack target
-                !afterStr = T.unpack after
-                
-                !formattedTarget = format targetStr
-                !numStr = pad numLen (show num)
-                
-            in if null targetStr
-               then numStr ++ " | " ++ beforeStr ++ afterStr ++ "\n"
-               else numStr ++ " | " ++ beforeStr ++ colour ++ formattedTarget ++ reset ++ afterStr ++ "\n"
-        
-        -- Process all relevant lines
-        result = concat $ zipWith processLine relevantLines [sLine..eLine]
-        
-    in result
+-- | Internal highlight with Text
+highlight' :: (Int, Int) -> (Int, Int) -> String -> (String -> String) -> T.Text -> String
+highlight' s_pos e_pos colour format file =
+    let !cache = buildLineCache file
+    in highlightFast cache s_pos e_pos colour format file
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
