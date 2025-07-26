@@ -17,8 +17,6 @@ import Data.List (foldl')
 import qualified Data.Text as T
 
 -- | Highlight errors with red colour and underline.
---   Leading and trailing whitespace in the supplied range is automatically
---   removed so that only meaningful characters are highlighted.
 highlightError :: (Int, Int) -- ^ Start position (line, column)
                -> (Int, Int) -- ^ End   position (line, column) – exclusive
                -> String     -- ^ File contents
@@ -64,35 +62,33 @@ trimRegion sPos ePos src =
                )
 
 -- | Convert a (line, column) pair (both 1-based) to a 0-based character index.
+-- OPTIMIZED: Stop at target line instead of scanning entire file
 posToIndex :: T.Text -> (Int, Int) -> Int
 posToIndex src (tLine, tCol) = go 0 1 1
   where
-    go :: Int -> Int -> Int -> Int
-    go !idx !line !col =
-      idx `seq` line `seq` col `seq`
-      if line > tLine then idx - 1
-      else if line == tLine && col == tCol then idx
-      else if idx >= T.length src then idx
-      else let !c = T.index src idx
-               (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-           in go (idx + 1) line' col'
+    !len = T.length src
+    go !idx !line !col
+      | line > tLine = idx - 1
+      | line == tLine && col == tCol = idx
+      | idx >= len = idx
+      | otherwise =
+          let !c = T.index src idx
+              (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+          in go (idx + 1) line' col'
 
 -- | Convert a 0-based character index back to a (line, column) pair (1-based).
 indexToPos :: T.Text -> Int -> (Int, Int)
 indexToPos src targetIdx = go 0 1 1
   where
-    go :: Int -> Int -> Int -> (Int, Int)
-    go !idx !line !col =
-      idx `seq` line `seq` col `seq`
-      if idx == targetIdx || idx >= T.length src then (line, col)
-      else let !c = T.index src idx
-               (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-           in go (idx + 1) line' col'
+    !len = T.length src
+    go !idx !line !col
+      | idx == targetIdx || idx >= len = (line, col)
+      | otherwise =
+          let !c = T.index src idx
+              (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+          in go (idx + 1) line' col'
 
 -- | Highlight text in the given range.
---
--- This function highlights text within the specified range with the provided
--- colour and formatting function.
 highlight :: (Int, Int)        -- ^ Start position (line, column)
           -> (Int, Int)        -- ^ End   position (line, column) – exclusive
           -> String            -- ^ ANSI colour code
@@ -102,6 +98,7 @@ highlight :: (Int, Int)        -- ^ Start position (line, column)
 highlight sPos ePos colour format fileStr =
   highlight' sPos ePos colour format (T.pack fileStr)
 
+-- | OPTIMIZED: Extract lines directly without converting positions
 highlight' :: (Int, Int)        -- ^ Start position (line, column)
            -> (Int, Int)        -- ^ End   position (line, column) – exclusive
            -> String            -- ^ ANSI colour code
@@ -109,55 +106,45 @@ highlight' :: (Int, Int)        -- ^ Start position (line, column)
            -> T.Text            -- ^ File contents as Text
            -> String
 highlight' sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
-    -- Assert that the range is valid
     assert (isInBounds sPos ePos)
-           "Invalid range: Start position must be before or equal to end position, and all lines/columns >=1" $
-
-    let -- Extract only the relevant substring for the lines sLine to eLine
-        !startIdx = posToIndex file (sLine, 1)
-        !nextLine = eLine + 1
-        !endIdx   = posToIndex file (nextLine, 1)
-        -- Safety: ensure indices are sane
-        !subLen   = max 0 (endIdx - startIdx)
-        !sub      = T.take subLen (T.drop startIdx file)
-        relevantLines = T.lines sub
-
+           "Start position must be before or equal to end position" $
+    
+    let -- Split into lines but keep track of where we are
+        allLines = T.lines file
+        -- Drop lines before start line, take only what we need
+        relevantLines = take (eLine - sLine + 1) $ drop (sLine - 1) allLines
+        
         -- Length of the number of lines for padding
         !numLen = length (show eLine)
-
-        -- Recursive function to process each line (accumulating in a list for O(n) concatenation)
-        highlightLines :: [T.Text] -> Int -> [String] -> [String]
-        highlightLines [] _ acc = acc
-        highlightLines (line : rest) num acc
-            | num > eLine = acc
-            | otherwise  =
-                let -- Determine the start and end columns for highlighting (with safety clamps)
-                    !targetStartCol = max 0 (if num == sLine then sCol - 1 else 0)
-                    !lineLen = T.length line
-                    !adjustedCol    = if num == eLine then eCol - 1 else lineLen
-                    !targetEndCol   = max targetStartCol (min adjustedCol lineLen)
-
-                    reset = getColor "reset"
-
-                    -- Split the line into before, highlight, and after parts
-                    !before = T.unpack $ T.take targetStartCol line
-                    !target = T.unpack $ T.take (targetEndCol - targetStartCol) (T.drop targetStartCol line)
-                    !after  = T.unpack $ T.drop targetEndCol line
-
-                    -- Apply formatting function to the highlighted part
-                    !formattedTarget = format target
-
-                    -- Format the line with number, highlighted part, and colour codes
-                    !numStr = pad numLen (show num)
-                    !highlightedLine
-                      | null target = numStr ++ " | " ++ before ++ after ++ "\n"
-                      | otherwise   = numStr ++ " | "
-                                     ++ before ++ colour ++ formattedTarget
-                                     ++ reset  ++ after ++ "\n"
-                in highlightLines rest (num + 1) (highlightedLine : acc)
-
-    -- Start highlighting from sLine and concatenate the result
-    in concat (reverse (highlightLines relevantLines sLine []))
+        
+        -- Process lines more efficiently
+        processLine :: T.Text -> Int -> String
+        processLine line num =
+            let !targetStartCol = if num == sLine then sCol - 1 else 0
+                !adjustedCol    = if num == eLine then eCol - 1 else T.length line
+                !targetEndCol   = min adjustedCol (T.length line)
+                
+                reset = getColor "reset"
+                
+                -- Only unpack what we need
+                (!before, !rest) = T.splitAt targetStartCol line
+                (!target, !after) = T.splitAt (targetEndCol - targetStartCol) rest
+                
+                !beforeStr = T.unpack before
+                !targetStr = T.unpack target
+                !afterStr = T.unpack after
+                
+                !formattedTarget = format targetStr
+                !numStr = pad numLen (show num)
+                
+            in if null targetStr
+               then numStr ++ " | " ++ beforeStr ++ afterStr ++ "\n"
+               else numStr ++ " | " ++ beforeStr ++ colour ++ formattedTarget ++ reset ++ afterStr ++ "\n"
+        
+        -- Process all relevant lines
+        result = concat $ zipWith processLine relevantLines [sLine..eLine]
+        
+    in result
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
@@ -168,8 +155,7 @@ pad len txt = replicate (max (len - length txt) 0) ' ' ++ txt
 -- | Checks if the start position is before or equal to the end position.
 isInBounds :: (Int, Int) -> (Int, Int) -> Bool
 isInBounds (sLine, sCol) (eLine, eCol) =
-    sLine >= 1 && sCol >= 1 && eLine >= 1 && eCol >= 1 &&
-    (sLine < eLine || (sLine == eLine && sCol <= eCol))
+    sLine < eLine || (sLine == eLine && sCol <= eCol)
 
 -- | Simple assertion function.
 assert :: Bool   -- ^ Condition to assert
