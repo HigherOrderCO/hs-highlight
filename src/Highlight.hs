@@ -15,83 +15,42 @@ module Highlight
 import Data.Char (isSpace)
 import Data.List (foldl')
 import qualified Data.Text as T
-import qualified Data.Vector as V
-
--- | Pre-computed line information for efficient position lookups
-data LineInfo = LineInfo
-    { lineOffsets :: !(V.Vector Int)  -- Starting position of each line
-    , totalLines  :: !Int
-    } deriving (Show)
-
--- | Build line information by scanning the text once
-buildLineInfo :: T.Text -> LineInfo
-buildLineInfo txt = LineInfo (V.fromList offsets) (length offsets)
-  where
-    offsets = 0 : go 0
-    go !idx
-        | idx >= T.length txt = []
-        | T.index txt idx == '\n' = (idx + 1) : go (idx + 1)
-        | otherwise = go (idx + 1)
-
--- | Convert a (line, column) pair (both 1-based) to a 0-based character index.
--- Much faster version using pre-computed line offsets.
-posToIndexFast :: LineInfo -> (Int, Int) -> Int
-posToIndexFast (LineInfo offsets _) (line, col) =
-    if line <= 0 || line > V.length offsets
-    then 0
-    else (offsets V.! (line - 1)) + (col - 1)
-
--- | Convert a 0-based character index back to a (line, column) pair (1-based).
--- Much faster version using binary search on pre-computed line offsets.
-indexToPosFast :: LineInfo -> Int -> (Int, Int)
-indexToPosFast (LineInfo offsets _) idx =
-    let line = binarySearch 0 (V.length offsets - 1)
-    in (line + 1, idx - (offsets V.! line) + 1)
-  where
-    binarySearch !low !high
-        | low >= high = low
-        | otherwise =
-            let !mid = (low + high + 1) `div` 2
-                !midOffset = offsets V.! mid
-            in if idx < midOffset
-               then binarySearch low (mid - 1)
-               else binarySearch mid high
 
 -- | Highlight errors with red colour and underline.
+--   Leading and trailing whitespace in the supplied range is automatically
+--   removed so that only meaningful characters are highlighted.
 highlightError :: (Int, Int) -- ^ Start position (line, column)
                -> (Int, Int) -- ^ End   position (line, column) – exclusive
                -> String     -- ^ File contents
                -> String
 highlightError sPos ePos fileStr =
     let !file = T.pack fileStr
-        !lineInfo = buildLineInfo file
-        (trimSPos, trimEPos) = trimRegion' lineInfo sPos ePos file
+        (trimSPos, trimEPos) = trimRegion sPos ePos file
         colour               = getColor "red"
     in  if trimSPos == trimEPos
           then
-            let !startIdx = posToIndexFast lineInfo sPos
+            let !startIdx = posToIndex file sPos
                 prevCharIdx = findLastNonSpace (T.take startIdx file)
             in if prevCharIdx /= -1
-                then let prevCharSPos = indexToPosFast lineInfo prevCharIdx
-                         prevCharEPos = indexToPosFast lineInfo (prevCharIdx + 1)
-                     in highlight'' lineInfo prevCharSPos prevCharEPos colour underline file
+                then let prevCharSPos = indexToPos file prevCharIdx
+                         prevCharEPos = indexToPos file (prevCharIdx + 1)
+                     in highlight' prevCharSPos prevCharEPos colour underline file
                 else fileStr -- Nothing to highlight, return original text.
-          else highlight'' lineInfo trimSPos trimEPos colour underline file
+          else highlight' trimSPos trimEPos colour underline file
   where
     findLastNonSpace txt = snd $ T.foldl' go (0, -1) txt
       where go (!idx, !maxidx) c = (idx + 1, if not (isSpace c) then idx else maxidx)
 
 -- | Trim leading and trailing whitespace (spaces, tabs, new-lines, etc.) from
 --   the given range.  The returned end position is again /exclusive/.
-trimRegion'
-    :: LineInfo
-    -> (Int, Int)             -- ^ Start position (line, column)
+trimRegion
+    :: (Int, Int)             -- ^ Start position (line, column)
     -> (Int, Int)             -- ^ End   position (line, column) – exclusive
     -> T.Text                 -- ^ Whole source text
     -> ((Int, Int), (Int, Int))
-trimRegion' lineInfo sPos ePos src =
-    let !startIdx = posToIndexFast lineInfo sPos
-        !endIdx   = posToIndexFast lineInfo ePos
+trimRegion sPos ePos src =
+    let !startIdx = posToIndex src sPos
+        !endIdx   = posToIndex src ePos
         !sub      = T.drop startIdx (T.take endIdx src)
         !leading  = T.length (T.takeWhile isSpace sub)
         !newStartIdx = startIdx + leading
@@ -100,11 +59,40 @@ trimRegion' lineInfo sPos ePos src =
         !newEndIdx = newStartIdx + (T.length remaining - trailing)
     in if newStartIdx >= newEndIdx
           then (sPos, sPos)  -- selection contained only whitespace
-          else ( indexToPosFast lineInfo newStartIdx
-               , indexToPosFast lineInfo newEndIdx
+          else ( indexToPos src newStartIdx
+               , indexToPos src newEndIdx
                )
 
+-- | Convert a (line, column) pair (both 1-based) to a 0-based character index.
+posToIndex :: T.Text -> (Int, Int) -> Int
+posToIndex src (tLine, tCol) = go 0 1 1
+  where
+    go :: Int -> Int -> Int -> Int
+    go !idx !line !col =
+      idx `seq` line `seq` col `seq`
+      if line > tLine then idx - 1
+      else if line == tLine && col == tCol then idx
+      else if idx >= T.length src then idx
+      else let !c = T.index src idx
+               (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+           in go (idx + 1) line' col'
+
+-- | Convert a 0-based character index back to a (line, column) pair (1-based).
+indexToPos :: T.Text -> Int -> (Int, Int)
+indexToPos src targetIdx = go 0 1 1
+  where
+    go :: Int -> Int -> Int -> (Int, Int)
+    go !idx !line !col =
+      idx `seq` line `seq` col `seq`
+      if idx == targetIdx || idx >= T.length src then (line, col)
+      else let !c = T.index src idx
+               (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+           in go (idx + 1) line' col'
+
 -- | Highlight text in the given range.
+--
+-- This function highlights text within the specified range with the provided
+-- colour and formatting function.
 highlight :: (Int, Int)        -- ^ Start position (line, column)
           -> (Int, Int)        -- ^ End   position (line, column) – exclusive
           -> String            -- ^ ANSI colour code
@@ -112,28 +100,23 @@ highlight :: (Int, Int)        -- ^ Start position (line, column)
           -> String            -- ^ File contents
           -> String
 highlight sPos ePos colour format fileStr =
-  let !file = T.pack fileStr
-      !lineInfo = buildLineInfo file
-  in highlight'' lineInfo sPos ePos colour format file
+  highlight' sPos ePos colour format (T.pack fileStr)
 
-highlight'' :: LineInfo
-            -> (Int, Int)        -- ^ Start position (line, column)
-            -> (Int, Int)        -- ^ End   position (line, column) – exclusive
-            -> String            -- ^ ANSI colour code
-            -> (String -> String)
-            -> T.Text            -- ^ File contents as Text
-            -> String
-highlight'' lineInfo sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
+highlight' :: (Int, Int)        -- ^ Start position (line, column)
+           -> (Int, Int)        -- ^ End   position (line, column) – exclusive
+           -> String            -- ^ ANSI colour code
+           -> (String -> String)
+           -> T.Text            -- ^ File contents as Text
+           -> String
+highlight' sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
     -- Assert that the range is valid
     assert (isInBounds sPos ePos)
-           "Start position must be before or equal to end position" $
+           "Invalid range: Start position must be before or equal to end position, and all lines/columns >=1" $
 
     let -- Extract only the relevant substring for the lines sLine to eLine
-        !startIdx = posToIndexFast lineInfo (sLine, 1)
+        !startIdx = posToIndex file (sLine, 1)
         !nextLine = eLine + 1
-        !endIdx   = if nextLine > totalLines lineInfo
-                    then T.length file
-                    else posToIndexFast lineInfo (nextLine, 1)
+        !endIdx   = posToIndex file (nextLine, 1)
         -- Safety: ensure indices are sane
         !subLen   = max 0 (endIdx - startIdx)
         !sub      = T.take subLen (T.drop startIdx file)
@@ -142,16 +125,17 @@ highlight'' lineInfo sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
         -- Length of the number of lines for padding
         !numLen = length (show eLine)
 
-        -- Recursive function to process each line (using Text for efficiency)
-        highlightLines :: [T.Text] -> Int -> String
-        highlightLines [] _ = ""  -- Base case: no more lines to process
-        highlightLines (line : rest) num
-            | num > eLine = ""  -- Stop processing if past the end line
+        -- Recursive function to process each line (accumulating in a list for O(n) concatenation)
+        highlightLines :: [T.Text] -> Int -> [String] -> [String]
+        highlightLines [] _ acc = acc
+        highlightLines (line : rest) num acc
+            | num > eLine = acc
             | otherwise  =
-                let -- Determine the start and end columns for highlighting
-                    !targetStartCol = if num == sLine then sCol - 1 else 0
-                    !adjustedCol    = if num == eLine then eCol - 1 else T.length line
-                    !targetEndCol   = min adjustedCol (T.length line)
+                let -- Determine the start and end columns for highlighting (with safety clamps)
+                    !targetStartCol = max 0 (if num == sLine then sCol - 1 else 0)
+                    !lineLen = T.length line
+                    !adjustedCol    = if num == eLine then eCol - 1 else lineLen
+                    !targetEndCol   = max targetStartCol (min adjustedCol lineLen)
 
                     reset = getColor "reset"
 
@@ -170,10 +154,10 @@ highlight'' lineInfo sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
                       | otherwise   = numStr ++ " | "
                                      ++ before ++ colour ++ formattedTarget
                                      ++ reset  ++ after ++ "\n"
-                in highlightedLine ++ highlightLines rest (num + 1)  -- Recursively process remaining lines
+                in highlightLines rest (num + 1) (highlightedLine : acc)
 
-    -- Start highlighting from sLine
-    in highlightLines relevantLines sLine
+    -- Start highlighting from sLine and concatenate the result
+    in concat (reverse (highlightLines relevantLines sLine []))
 
 -- | Pads a string with spaces to the left.
 pad :: Int    -- ^ Desired length
@@ -184,7 +168,8 @@ pad len txt = replicate (max (len - length txt) 0) ' ' ++ txt
 -- | Checks if the start position is before or equal to the end position.
 isInBounds :: (Int, Int) -> (Int, Int) -> Bool
 isInBounds (sLine, sCol) (eLine, eCol) =
-    sLine < eLine || (sLine == eLine && sCol <= eCol)
+    sLine >= 1 && sCol >= 1 && eLine >= 1 && eCol >= 1 &&
+    (sLine < eLine || (sLine == eLine && sCol <= eCol))
 
 -- | Simple assertion function.
 assert :: Bool   -- ^ Condition to assert
@@ -237,4 +222,3 @@ strikethrough text = "\x1b[9m" ++ text ++ "\x1b[29m"
 inverse :: String -- ^ Text to inverse
         -> String
 inverse text = "\x1b[7m" ++ text ++ "\x1b[27m"
-

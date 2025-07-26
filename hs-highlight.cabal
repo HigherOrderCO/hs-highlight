@@ -19,7 +19,7 @@ source-repository head
   location: https://github.com/Lorenzobattistela/hs-highlight.git
 
 common warnings
-    ghc-options: -Wall
+    ghc-options: -Wall -O2
 
 library
     import:           warnings
