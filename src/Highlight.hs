@@ -15,6 +15,8 @@ module Highlight
 import Data.Char (isSpace)
 import Data.List (foldl')
 import qualified Data.Text as T
+import Control.Monad.ST
+import Data.STRef
 
 -- | Highlight errors with red colour and underline.
 --   Leading and trailing whitespace in the supplied range is automatically
@@ -34,9 +36,9 @@ highlightError sPos ePos fileStr =
             in if prevCharIdx /= -1
                 then let prevCharSPos = indexToPos file prevCharIdx
                          prevCharEPos = indexToPos file (prevCharIdx + 1)
-                     in highlight prevCharSPos prevCharEPos colour underline fileStr
+                     in highlight' prevCharSPos prevCharEPos colour underline file
                 else fileStr -- Nothing to highlight, return original text.
-          else highlight trimSPos trimEPos colour underline fileStr
+          else highlight' trimSPos trimEPos colour underline file
   where
     findLastNonSpace txt = snd $ T.foldl' go (0, -1) txt
       where go (!idx, !maxidx) c = (idx + 1, if not (isSpace c) then idx else maxidx)
@@ -65,27 +67,51 @@ trimRegion sPos ePos src =
 
 -- | Convert a (line, column) pair (both 1-based) to a 0-based character index.
 posToIndex :: T.Text -> (Int, Int) -> Int
-posToIndex src (tLine, tCol) = go 0 1 1
-  where
-    go !idx !line !col
-        | line > tLine = idx - 1
-        | line == tLine && col == tCol = idx
-        | idx >= T.length src = idx
-        | otherwise =
-            let !c = T.index src idx
-                (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-            in go (idx + 1) line' col'
+posToIndex src (tLine, tCol) = runST $ do
+  let !len = T.length src
+  idxRef <- newSTRef 0
+  lineRef <- newSTRef 1
+  colRef <- newSTRef 1
+  let rec = do
+        !idx <- readSTRef idxRef
+        !line <- readSTRef lineRef
+        !col <- readSTRef colRef
+        if line > tLine
+          then return (idx - 1)
+          else if line == tLine && col == tCol
+            then return idx
+            else if idx >= len
+              then return idx
+              else do
+                let !c = T.index src idx
+                let (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+                writeSTRef lineRef line'
+                writeSTRef colRef col'
+                writeSTRef idxRef (idx + 1)
+                rec
+  rec
 
 -- | Convert a 0-based character index back to a (line, column) pair (1-based).
 indexToPos :: T.Text -> Int -> (Int, Int)
-indexToPos src targetIdx = go 0 1 1
-  where
-    go !idx !line !col
-        | idx == targetIdx || idx >= T.length src = (line, col)
-        | otherwise =
+indexToPos src targetIdx = runST $ do
+  let !len = T.length src
+  idxRef <- newSTRef 0
+  lineRef <- newSTRef 1
+  colRef <- newSTRef 1
+  let rec = do
+        !idx <- readSTRef idxRef
+        !line <- readSTRef lineRef
+        !col <- readSTRef colRef
+        if idx == targetIdx || idx >= len
+          then return (line, col)
+          else do
             let !c = T.index src idx
-                (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
-            in go (idx + 1) line' col'
+            let (!line', !col') = if c == '\n' then (line + 1, 1) else (line, col + 1)
+            writeSTRef lineRef line'
+            writeSTRef colRef col'
+            writeSTRef idxRef (idx + 1)
+            rec
+  rec
 
 -- | Highlight text in the given range.
 --
@@ -97,13 +123,21 @@ highlight :: (Int, Int)        -- ^ Start position (line, column)
           -> (String -> String)
           -> String            -- ^ File contents
           -> String
-highlight sPos@(sLine, sCol) ePos@(eLine, eCol) colour format fileStr =
+highlight sPos ePos colour format fileStr =
+  highlight' sPos ePos colour format (T.pack fileStr)
+
+highlight' :: (Int, Int)        -- ^ Start position (line, column)
+           -> (Int, Int)        -- ^ End   position (line, column) – exclusive
+           -> String            -- ^ ANSI colour code
+           -> (String -> String)
+           -> T.Text            -- ^ File contents as Text
+           -> String
+highlight' sPos@(sLine, sCol) ePos@(eLine, eCol) colour format file =
     -- Assert that the range is valid
     assert (isInBounds sPos ePos)
            "Start position must be before or equal to end position" $
 
-    let !file = T.pack fileStr
-        -- Extract only the relevant substring for the lines sLine to eLine
+    let -- Extract only the relevant substring for the lines sLine to eLine
         !startIdx = posToIndex file (sLine, 1)
         !nextLine = eLine + 1
         !endIdx   = posToIndex file (nextLine, 1)
